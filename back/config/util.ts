@@ -132,7 +132,8 @@ export async function getNetIp(req: any) {
     ]),
   ];
   let ip = ipArray[0];
-  console.log(ipArray);
+  console.log(`访问的ip ${ipArray.toString()}`);
+
   if (ipArray.length > 1) {
     for (let i = 0; i < ipArray.length; i++) {
       const ipNumArray = ipArray[i].split('.');
@@ -148,6 +149,7 @@ export async function getNetIp(req: any) {
         continue;
       }
       ip = ipArray[i];
+      break;
     }
   }
   ip = ip.substr(ip.lastIndexOf(':') + 1, ip.length);
@@ -163,9 +165,13 @@ export async function getNetIp(req: any) {
       .json();
     return { address: data[0].location, ip };
   } catch (error) {
-    const { country, regionName, city } = await got
-      .get(`http://ip-api.com/json/${ip}?lang=zh-CN`)
-      .json();
-    return { address: `${country} ${regionName} ${city}`, ip };
+    try {
+      const { country, regionName, city } = await got
+        .get(`http://ip-api.com/json/${ip}?lang=zh-CN`)
+        .json();
+      return { address: `${country} ${regionName} ${city}`, ip };
+    } catch (err) {
+      return { address: `获取失败`, ip };
+    }
   }
 }
