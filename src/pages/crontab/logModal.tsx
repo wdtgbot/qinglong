@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Modal, message, Input, Form, Statistic } from 'antd';
+import { Modal, message, Input, Form, Statistic, Button } from 'antd';
 import { request } from '@/utils/http';
 import config from '@/utils/config';
 import {
   Loading3QuartersOutlined,
   CheckCircleOutlined,
 } from '@ant-design/icons';
+import { PageLoading } from '@ant-design/pro-layout';
 
 enum CrontabStatus {
   'running',
@@ -19,14 +20,18 @@ const CronLogModal = ({
   cron,
   handleCancel,
   visible,
+  data,
+  logUrl,
 }: {
   cron?: any;
   visible: boolean;
   handleCancel: () => void;
+  data?: string;
+  logUrl?: string;
 }) => {
   const [value, setValue] = useState<string>('启动中...');
   const [loading, setLoading] = useState<any>(true);
-  const [excuting, setExcuting] = useState<any>(true);
+  const [executing, setExecuting] = useState<any>(true);
   const [isPhone, setIsPhone] = useState(false);
   const [theme, setTheme] = useState<string>('');
 
@@ -35,12 +40,12 @@ const CronLogModal = ({
       setLoading(true);
     }
     request
-      .get(`${config.apiPrefix}crons/${cron._id}/log`)
+      .get(logUrl ? logUrl : `${config.apiPrefix}crons/${cron.id}/log`)
       .then((data: any) => {
-        if (localStorage.getItem('logCron') === cron._id) {
+        if (localStorage.getItem('logCron') === String(cron.id)) {
           const log = data.data as string;
           setValue(log || '暂无日志');
-          setExcuting(
+          setExecuting(
             log && !log.includes('执行结束') && !log.includes('重启面板'),
           );
           if (log && !log.includes('执行结束') && !log.includes('重启面板')) {
@@ -60,7 +65,7 @@ const CronLogModal = ({
                   <Countdown
                     className="inline-countdown"
                     format="ss"
-                    value={Date.now() + 1000 * 10}
+                    value={Date.now() + 1000 * 30}
                   />
                   秒后自动刷新
                 </span>
@@ -69,7 +74,7 @@ const CronLogModal = ({
             });
             setTimeout(() => {
               window.location.reload();
-            }, 10000);
+            }, 30000);
           }
         }
       })
@@ -88,18 +93,24 @@ const CronLogModal = ({
   const titleElement = () => {
     return (
       <>
-        {excuting && <Loading3QuartersOutlined spin />}
-        {!excuting && <CheckCircleOutlined />}
-        <span style={{ marginLeft: 5 }}>日志-{cron && cron.name}</span>{' '}
+        {(executing || loading) && <Loading3QuartersOutlined spin />}
+        {!executing && !loading && <CheckCircleOutlined />}
+        <span style={{ marginLeft: 5 }}>{cron && cron.name}</span>
       </>
     );
   };
 
   useEffect(() => {
-    if (cron) {
+    if (cron && cron.id && visible) {
       getCronLog(true);
     }
-  }, [cron]);
+  }, [cron, visible]);
+
+  useEffect(() => {
+    if (data) {
+      setValue(data);
+    }
+  }, [data]);
 
   useEffect(() => {
     setIsPhone(document.body.clientWidth < 768);
@@ -112,14 +123,20 @@ const CronLogModal = ({
       centered
       className="log-modal"
       bodyStyle={{
-        overflowY: 'auto',
-        maxHeight: 'calc(80vh - var(--vh-offset, 0px))',
+        minHeight: '300px',
       }}
       forceRender
       onOk={() => cancel()}
       onCancel={() => cancel()}
+      footer={[
+        <Button type="primary" onClick={() => cancel()}>
+          知道了
+        </Button>,
+      ]}
     >
-      {!loading && value && (
+      {loading ? (
+        <PageLoading />
+      ) : (
         <pre
           style={
             isPhone

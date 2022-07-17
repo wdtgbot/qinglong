@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 
 ## 导入通用变量与函数
-dir_shell=/ql/shell
+dir_shell=$QL_DIR/shell
 . $dir_shell/share.sh
 . $dir_shell/api.sh
 
 ## 选择python3还是node
 define_program() {
-    local p1=$1
-    if [[ $p1 == *.js ]]; then
+    local file_param=$1
+    if [[ $file_param == *.js ]]; then
         which_program="node"
-    elif [[ $p1 == *.py ]]; then
+    elif [[ $file_param == *.py ]] || [[ $file_param == *.pyc ]]; then
         which_program="python3"
-    elif [[ $p1 == *.sh ]]; then
+    elif [[ $file_param == *.sh ]]; then
         which_program="bash"
-    elif [[ $p1 == *.ts ]]; then
+    elif [[ $file_param == *.ts ]]; then
         which_program="ts-node-transpile-only"
     else
         which_program=""
@@ -39,7 +39,7 @@ gen_array_scripts() {
     local i="-1"
     cd $dir_scripts
     for file in $(ls); do
-        if [ -f $file ] && [[ $file == *.js && $file != sendNotify.js ]]; then
+        if [[ -f $file ]] && [[ $file == *.js && $file != sendNotify.js ]]; then
             let i++
             array_scripts[i]=$(echo "$file" | perl -pe "s|$dir_scripts/||g")
             array_scripts_name[i]=$(grep "new Env" $file | awk -F "'|\"" '{print $2}' | head -1)
@@ -54,9 +54,10 @@ usage() {
     define_cmd
     gen_array_scripts
     echo -e "task命令运行本程序自动添加进crontab的脚本，需要输入脚本的绝对路径或去掉 “$dir_scripts/” 目录后的相对路径（定时任务中请写作相对路径），用法为："
-    echo -e "1.$cmd_task <file_name>                  # 依次执行，如果设置了随机延迟，将随机延迟一定秒数"
-    echo -e "2.$cmd_task <file_name> now              # 依次执行，无论是否设置了随机延迟，均立即运行，前台会输出日志，同时记录在日志文件中"
-    echo -e "3.$cmd_task <file_name> conc <环境变量名>  # 并发执行，无论是否设置了随机延迟，均立即运行，前台不产生日志，直接记录在日志文件中"
+    echo -e "1.$cmd_task <file_name>                                             # 依次执行，如果设置了随机延迟，将随机延迟一定秒数"
+    echo -e "2.$cmd_task <file_name> now                                         # 依次执行，无论是否设置了随机延迟，均立即运行，前台会输出日志，同时记录在日志文件中"
+    echo -e "3.$cmd_task <file_name> conc <环境变量名称> <账号编号，空格分隔>(可选的)  # 并发执行，无论是否设置了随机延迟，均立即运行，前台不产生日志，直接记录在日志文件中，且可指定账号执行"
+    echo -e "4.$cmd_task <file_name> desi <环境变量名称> <账号编号，空格分隔>         # 指定账号执行，无论是否设置了随机延迟，均立即运行"
     if [[ ${#array_scripts[*]} -gt 0 ]]; then
         echo -e "\n当前有以下脚本可以运行:"
         for ((i = 0; i < ${#array_scripts[*]}; i++)); do
@@ -75,113 +76,265 @@ run_nohup() {
 
 ## 正常运行单个脚本，$1：传入参数
 run_normal() {
-    local p1=$1
-    cd $dir_scripts
-    define_program "$p1"
-    if [[ $p1 == *.js ]]; then
+    local file_param=$1
+    define_program "$file_param"
+    if [[ $file_param == *.js ]]; then
         if [[ $# -eq 1 ]]; then
             random_delay
         fi
     fi
-    log_time=$(date "+%Y-%m-%d-%H-%M-%S")
-    log_dir_tmp="${p1##*/}"
-    log_dir="$dir_log/${log_dir_tmp%%.*}"
+
+    local time=$(date "+$time_format")
+    log_time=$(format_log_time "$time_format" "$time")
+    log_dir_tmp="${file_param##*/}"
+    if [[ $file_param =~ "/" ]]; then
+        if [[ $file_param == /* ]]; then
+            log_dir_tmp_path="${file_param:1}"
+        else
+            log_dir_tmp_path="${file_param}"
+        fi
+    fi
+    log_dir_tmp_path="${log_dir_tmp_path%/*}"
+    log_dir_tmp_path="${log_dir_tmp_path##*/}"
+    [[ $log_dir_tmp_path ]] && log_dir_tmp="${log_dir_tmp_path}_${log_dir_tmp}"
+    log_dir="${log_dir_tmp%.*}"
     log_path="$log_dir/$log_time.log"
-    cmd=">> $log_path"
+    cmd=">> $dir_log/$log_path 2>&1"
     [[ "$show_log" == "true" ]] && cmd=""
-    make_dir "$log_dir"
+    make_dir "$dir_log/$log_dir"
 
-    local id=$(cat $list_crontab_user | grep -E "$cmd_task $p1" | perl -pe "s|.*ID=(.*) $cmd_task $p1\.*|\1|" | head -1 | awk -F " " '{print $1}')
-    local begin_time=$(date '+%Y-%m-%d %H:%M:%S')
-    eval echo -e "## 开始执行... $begin_time\n" $cmd
-    eval cat $task_error_log_path $cmd
+    local begin_time=$(format_time "$time_format" "$time")
+    local begin_timestamp=$(format_timestamp "$time_format" "$time")
+    
+    eval echo -e "\#\# 开始执行... $begin_time\\\n" $cmd
+    [[ -f $task_error_log_path ]] && eval cat $task_error_log_path $cmd
 
-    [[ $id ]] && update_cron "\"$id\"" "0" "$$" "$log_path"
-    . $file_task_before $cmd 2>&1
+    local id=$(cat $list_crontab_user | grep -E "$cmd_task $file_param" | perl -pe "s|.*ID=(.*) $cmd_task $file_param\.*|\1|" | head -1 | awk -F " " '{print $1}')
+    [[ $id ]] && update_cron "\"$id\"" "0" "$$" "$log_path" "$begin_timestamp"
+    eval . $file_task_before "$@" $cmd
 
-    eval timeout -k 10s $command_timeout_time $which_program $p1 $cmd 2>&1
+    cd $dir_scripts
+    local relative_path="${file_param%/*}"
+    if [[ ! -z ${relative_path} ]] && [[ ${file_param} =~ "/" ]]; then
+        cd ${relative_path}
+        file_param=${file_param/$relative_path\//}
+    fi
+    
+    eval $timeoutCmd $which_program $file_param $cmd
 
-    eval . $file_task_after $cmd 2>&1
-    [[ $id ]] && update_cron "\"$id\"" "1" "" "$log_path"
+    eval . $file_task_after "$@" $cmd
     local end_time=$(date '+%Y-%m-%d %H:%M:%S')
-    local diff_time=$(($(date +%s -d "$end_time") - $(date +%s -d "$begin_time")))
-    eval echo -e "\n## 执行结束... $end_time  耗时 $diff_time 秒" $cmd
+    local end_timestamp=$(date "+%s")
+    local diff_time=$(expr $end_timestamp - $begin_timestamp)
+    [[ $id ]] && update_cron "\"$id\"" "1" "" "$log_path" "$begin_timestamp" "$diff_time"
+    eval echo -e "\\\n\#\# 执行结束... $end_time  耗时 $diff_time 秒" $cmd
 }
 
 ## 并发执行时，设定的 RandomDelay 不会生效，即所有任务立即执行
 run_concurrent() {
-    local p1=$1
-    local p3=$3
-    if [[ ! $p3 ]]; then
+    local file_param="$1"
+    local env_param="$2"
+    local num_param=$(echo "$3" | perl -pe "s|.*$2(.*)|\1|")
+    if [[ ! $env_param ]]; then
         echo -e "\n 缺少并发运行的环境变量参数"
         exit 1
     fi
 
-    cd $dir_scripts
-    define_program "$p1"
-    log_time=$(date "+%Y-%m-%d-%H-%M-%S")
-    log_dir_tmp="${p1##*/}"
-    log_dir="$dir_log/${log_dir_tmp%%.*}"
+    local envs=$(eval echo "\$${env_param}")
+    local array=($(echo $envs | sed 's/&/ /g'))
+    local tempArr=$(echo $num_param | perl -pe "s|(\d+)(-\|~\|_)(\d+)|{\1..\3}|g")
+    local runArr=($(eval echo $tempArr))
+    runArr=($(awk -v RS=' ' '!a[$1]++' <<< ${runArr[@]}))
+
+    local n=0
+    for i in ${runArr[@]}; do
+        array_run[n]=${array[$i - 1]}
+        let n++
+    done
+
+    local cookieStr=$(echo ${array_run[*]} | sed 's/\ /\&/g')
+    [[ ! -z $cookieStr ]] && export ${env_param}=${cookieStr}
+
+    define_program "$file_param"
+    local time=$(date "+$time_format")
+    log_time=$(format_log_time "$time_format" "$time")
+    log_dir_tmp="${file_param##*/}"
+    if [[ $file_param =~ "/" ]]; then
+        if [[ $file_param == /* ]]; then
+            log_dir_tmp_path="${file_param:1}"
+        else
+            log_dir_tmp_path="${file_param}"
+        fi
+    fi
+    log_dir_tmp_path="${log_dir_tmp_path%/*}"
+    log_dir_tmp_path="${log_dir_tmp_path##*/}"
+    [[ $log_dir_tmp_path ]] && log_dir_tmp="${log_dir_tmp_path}_${log_dir_tmp}"
+    log_dir="${log_dir_tmp%.*}"
     log_path="$log_dir/$log_time.log"
-    cmd=">> $log_path"
+    cmd=">> $dir_log/$log_path 2>&1"
     [[ "$show_log" == "true" ]] && cmd=""
-    make_dir $log_dir
+    make_dir "$dir_log/$log_dir"
 
-    local id=$(cat $list_crontab_user | grep -E "$cmd_task $p1" | perl -pe "s|.*ID=(.*) $cmd_task $p1\.*|\1|" | head -1 | awk -F " " '{print $1}')
-    local begin_time=$(date '+%Y-%m-%d %H:%M:%S')
-    eval echo -e "## 开始执行... $begin_time\n" $cmd
-    eval cat $task_error_log_path $cmd
-    [[ $id ]] && update_cron "\"$id\"" "0" "$$" "$log_path"
-    eval . $file_task_before $cmd 2>&1
+    local begin_time=$(format_time "$time_format" "$time")
+    local begin_timestamp=$(format_timestamp "$time_format" "$time")
 
-    local envs=$(eval echo "\$${p3}")
+    eval echo -e "\#\# 开始执行... $begin_time\\\n" $cmd
+    [[ -f $task_error_log_path ]] && eval cat $task_error_log_path $cmd
+
+    local id=$(cat $list_crontab_user | grep -E "$cmd_task $file_param" | perl -pe "s|.*ID=(.*) $cmd_task $file_param\.*|\1|" | head -1 | awk -F " " '{print $1}')
+    [[ $id ]] && update_cron "\"$id\"" "0" "$$" "$log_path" "$begin_timestamp"
+    eval . $file_task_before "$@" $cmd
+
+    local envs=$(eval echo "\$${env_param}")
     local array=($(echo $envs | sed 's/&/ /g'))
     single_log_time=$(date "+%Y-%m-%d-%H-%M-%S.%N")
+
+    cd $dir_scripts
+    local relative_path="${file_param%/*}"
+    if [[ ! -z ${relative_path} ]] && [[ ${file_param} =~ "/" ]]; then
+        cd ${relative_path}
+        file_param=${file_param/$relative_path\//}
+    fi
     for i in "${!array[@]}"; do
-        export ${p3}=${array[i]}
-        single_log_path="$log_dir/${single_log_time}_$((i + 1)).log"
-        timeout -k 10s $command_timeout_time $which_program $p1 &>$single_log_path 2>&1 &
+        export ${env_param}=${array[i]}
+        single_log_path="$dir_log/$log_dir/${single_log_time}_$((i + 1)).log"
+        eval $timeoutCmd $which_program $file_param &>$single_log_path &
     done
 
     wait
     for i in "${!array[@]}"; do
-        single_log_path="$log_dir/${single_log_time}_$((i + 1)).log"
+        single_log_path="$dir_log/$log_dir/${single_log_time}_$((i + 1)).log"
         eval cat $single_log_path $cmd
-        [ -f $single_log_path ] && rm -f $single_log_path
+        [[ -f $single_log_path ]] && rm -f $single_log_path
     done
 
-    eval . $file_task_after $cmd 2>&1
-    [[ $id ]] && update_cron "\"$id\"" "1" "" "$log_path"
+    eval . $file_task_after "$@" $cmd
     local end_time=$(date '+%Y-%m-%d %H:%M:%S')
-    local diff_time=$(($(date +%s -d "$end_time") - $(date +%s -d "$begin_time")))
-    eval echo -e "\n## 执行结束... $end_time  耗时 $diff_time 秒" $cmd
+    local end_timestamp=$(date "+%s")
+    local diff_time=$(( $end_timestamp - $begin_timestamp ))
+    [[ $id ]] && update_cron "\"$id\"" "1" "" "$log_path" "$begin_timestamp" "$diff_time"
+    eval echo -e "\\\n\#\# 执行结束... $end_time  耗时 $diff_time 秒" $cmd
+}
+
+run_designated() {
+    local file_param="$1"
+    local env_param="$2"
+    local num_param=$(echo "$3" | perl -pe "s|.*$2(.*)|\1|")
+    if [[ ! $env_param ]] || [[ ! $num_param ]]; then
+        echo -e "\n 缺少单独运行的参数 task xxx.js desi Test 1 3"
+        exit 1
+    fi
+
+    define_program "$file_param"
+    local time=$(date "+$time_format")
+    log_time=$(format_log_time "$time_format" "$time")
+    log_dir_tmp="${file_param##*/}"
+    if [[ $file_param =~ "/" ]]; then
+        if [[ $file_param == /* ]]; then
+            log_dir_tmp_path="${file_param:1}"
+        else
+            log_dir_tmp_path="${file_param}"
+        fi
+    fi
+    log_dir_tmp_path="${log_dir_tmp_path%/*}"
+    log_dir_tmp_path="${log_dir_tmp_path##*/}"
+    [[ $log_dir_tmp_path ]] && log_dir_tmp="${log_dir_tmp_path}_${log_dir_tmp}"
+    log_dir="${log_dir_tmp%.*}"
+    log_path="$log_dir/$log_time.log"
+    cmd=">> $dir_log/$log_path 2>&1"
+    [[ "$show_log" == "true" ]] && cmd=""
+    make_dir "$dir_log/$log_dir"
+
+    local begin_time=$(format_time "$time_format" "$time")
+    local begin_timestamp=$(format_timestamp "$time_format" "$time")
+
+    local envs=$(eval echo "\$${env_param}")
+    local array=($(echo $envs | sed 's/&/ /g'))
+    local tempArr=$(echo $num_param | perl -pe "s|(\d+)(-\|~\|_)(\d+)|{\1..\3}|g")
+    local runArr=($(eval echo $tempArr))
+    runArr=($(awk -v RS=' ' '!a[$1]++' <<< ${runArr[@]}))
+
+    local n=0
+    for i in ${runArr[@]}; do
+        array_run[n]=${array[$i - 1]}
+        let n++
+    done
+
+    local cookieStr=$(echo ${array_run[*]} | sed 's/\ /\&/g')
+    [[ ! -z $cookieStr ]] && export ${env_param}=${cookieStr}
+
+    eval echo -e "\#\# 开始执行... $begin_time\\\n" $cmd
+    [[ -f $task_error_log_path ]] && eval cat $task_error_log_path $cmd
+
+    local id=$(cat $list_crontab_user | grep -E "$cmd_task $file_param" | perl -pe "s|.*ID=(.*) $cmd_task $file_param\.*|\1|" | head -1 | awk -F " " '{print $1}')
+    [[ $id ]] && update_cron "\"$id\"" "0" "$$" "$log_path" "$begin_timestamp"
+    eval . $file_task_before "$@" $cmd
+
+    cd $dir_scripts
+    local relative_path="${file_param%/*}"
+    if [[ ! -z ${relative_path} ]] && [[ ${file_param} =~ "/" ]]; then
+        cd ${relative_path}
+        file_param=${file_param/$relative_path\//}
+    fi
+    eval $timeoutCmd $which_program $file_param $cmd
+
+    eval . $file_task_after "$@" $cmd
+    local end_time=$(date '+%Y-%m-%d %H:%M:%S')
+    local end_timestamp=$(date "+%s")
+    local diff_time=$(( $end_timestamp - $begin_timestamp ))
+    [[ $id ]] && update_cron "\"$id\"" "1" "" "$log_path" "$begin_timestamp" "$diff_time"
+    eval echo -e "\\\n\#\# 执行结束... $end_time  耗时 $diff_time 秒" $cmd
 }
 
 ## 运行其他命令
 run_else() {
-    local log_time=$(date "+%Y-%m-%d-%H-%M-%S")
-    local log_dir_tmp="${1##*/}"
-    local log_dir="$dir_log/${log_dir_tmp%%.*}"
+    local file_param="$1"
+    define_program "$file_param"
+    local time=$(date "+$time_format")
+    log_time=$(format_log_time "$time_format" "$time")
+    log_dir_tmp="${file_param##*/}"
+    if [[ $file_param =~ "/" ]]; then
+        if [[ $file_param == /* ]]; then
+            log_dir_tmp_path="${file_param:1}"
+        else
+            log_dir_tmp_path="${file_param}"
+        fi
+    fi
+    log_dir_tmp_path="${log_dir_tmp_path%/*}"
+    log_dir_tmp_path="${log_dir_tmp_path##*/}"
+    [[ $log_dir_tmp_path ]] && log_dir_tmp="${log_dir_tmp_path}_${log_dir_tmp}"
+    log_dir="${log_dir_tmp%.*}"
     log_path="$log_dir/$log_time.log"
-    cmd=">> $log_path"
+    cmd=">> $dir_log/$log_path 2>&1"
     [[ "$show_log" == "true" ]] && cmd=""
-    make_dir "$log_dir"
+    make_dir "$dir_log/$log_dir"
 
-    local id=$(cat $list_crontab_user | grep -E "$cmd_task $p1" | perl -pe "s|.*ID=(.*) $cmd_task $p1\.*|\1|" | head -1 | awk -F " " '{print $1}')
-    local begin_time=$(date '+%Y-%m-%d %H:%M:%S')
-    eval echo -e "## 开始执行... $begin_time\n" $cmd
-    eval cat $task_error_log_path $cmd
+    local begin_time=$(format_time "$time_format" "$time")
+    local begin_timestamp=$(format_timestamp "$time_format" "$time")
 
-    [[ $id ]] && update_cron "\"$id\"" "0" "$$" "$log_path"
-    eval . $file_task_before $cmd 2>&1
+    eval echo -e "\#\# 开始执行... $begin_time\\\n" $cmd
+    [[ -f $task_error_log_path ]] && eval cat $task_error_log_path $cmd
 
-    eval timeout -k 10s $command_timeout_time "$@" $cmd 2>&1
+    local id=$(cat $list_crontab_user | grep -E "$cmd_task $@" | perl -pe "s|.*ID=(.*) $cmd_task $@\.*|\1|" | head -1 | awk -F " " '{print $1}')
+    [[ $id ]] && update_cron "\"$id\"" "0" "$$" "$log_path" "$begin_timestamp"
+    eval . $file_task_before "$@" $cmd
 
-    eval . $file_task_after $cmd 2>&1
-    [[ $id ]] && update_cron "\"$id\"" "1" "" "$log_path"
+    cd $dir_scripts
+    local relative_path="${file_param%/*}"
+    if [[ ! -z ${relative_path} ]] && [[ ${file_param} =~ "/" ]]; then
+        cd ${relative_path}
+        file_param=${file_param/$relative_path\//}
+    fi
+
+    shift
+    eval $timeoutCmd $which_program "$file_param" "$@" $cmd
+
+    eval . $file_task_after "$file_param" "$@" $cmd
     local end_time=$(date '+%Y-%m-%d %H:%M:%S')
-    local diff_time=$(($(date +%s -d "$end_time") - $(date +%s -d "$begin_time")))
-    eval echo -e "\n## 执行结束... $end_time  耗时 $diff_time 秒" $cmd
+    local end_timestamp=$(date "+%s")
+    local diff_time=$(( $end_timestamp - $begin_timestamp ))
+    [[ $id ]] && update_cron "\"$id\"" "1" "" "$log_path" "$begin_timestamp" "$diff_time"
+    eval echo -e "\\\n\#\# 执行结束... $end_time  耗时 $diff_time 秒" $cmd
 }
 
 ## 命令检测
@@ -195,31 +348,37 @@ main() {
                 ;;
         esac
     done
-    shift $(($OPTIND - 1))
+    [[ "$show_log" == "true" ]] && shift $(($OPTIND - 1))
 
+    timeoutCmd=""
+    if type timeout &>/dev/null; then
+        timeoutCmd="timeout -k 10s $command_timeout_time "
+    fi
+
+    time_format="%Y-%m-%d %H:%M:%S"
     if [[ $1 == *.js ]] || [[ $1 == *.py ]] || [[ $1 == *.sh ]] || [[ $1 == *.ts ]]; then
         case $# in
         1)
-            run_normal $1
+            run_normal "$1"
             ;;
-        2 | 3)
+        *)
             case $2 in
             now)
-                run_normal $1 $2
+                run_normal "$1" "$2"
                 ;;
             conc)
-                run_concurrent $1 $2 $3
+                run_concurrent "$1" "$3" "$*"
+                ;;
+            desi)
+                run_designated "$1" "$3" "$*"
                 ;;
             *)
                 run_else "$@"
                 ;;
             esac
             ;;
-        *)
-            run_else "$@"
-            ;;
         esac
-        cat $log_path
+        [[ -f "$dir_log/$log_path" ]] && cat "$dir_log/$log_path"
     elif [[ $# -eq 0 ]]; then
         echo
         usage

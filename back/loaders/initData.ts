@@ -1,108 +1,117 @@
+import DependenceService from '../services/dependence';
 import { exec } from 'child_process';
 import { Container } from 'typedi';
-import { Crontab, CrontabStatus } from '../data/cron';
+import { Crontab, CrontabModel, CrontabStatus } from '../data/cron';
 import CronService from '../services/cron';
 import EnvService from '../services/env';
-
-const initData = [
-  {
-    name: '更新面板',
-    command: `ql update`,
-    schedule: `${randomSchedule(60, 1)} ${randomSchedule(
-      6,
-      1,
-    ).toString()} * * *`,
-    isDisabled: 1,
-  },
-  {
-    name: '删除日志',
-    command: 'ql rmlog 7',
-    schedule: '30 7 */7 * *',
-    isDisabled: 1,
-  },
-];
+import _ from 'lodash';
+import { DependenceModel } from '../data/dependence';
+import { Op } from 'sequelize';
+import config from '../config';
 
 export default async () => {
   const cronService = Container.get(CronService);
   const envService = Container.get(EnvService);
-  const cronDb = cronService.getDb();
+  const dependenceService = Container.get(DependenceService);
 
-  cronDb.count({}, async (err, count) => {
-    if (count === 0) {
-      const data = initData.map((x: any) => {
-        const tab = new Crontab(x);
-        tab.created = new Date().valueOf();
-        tab.saved = false;
-        if (tab.name === '更新面板') {
-          tab.isSystem = 1;
-        } else {
-          tab.isSystem = 0;
-        }
-        return tab;
-      });
-      cronDb.insert(data);
-      await cronService.autosave_crontab();
+  // 初始化更新所有任务状态为空闲
+  await CrontabModel.update(
+    { status: CrontabStatus.idle },
+    { where: { status: [CrontabStatus.running, CrontabStatus.queued] } },
+  );
+
+  // 初始化时安装所有处于安装中，安装成功，安装失败的依赖
+  DependenceModel.findAll({
+    where: {},
+    order: [['type', 'DESC']],
+    raw: true,
+  }).then(async (docs) => {
+    const groups = _.groupBy(docs, 'type');
+    const keys = Object.keys(groups).sort((a, b) => parseInt(b) - parseInt(a));
+    for (const key of keys) {
+      const group = groups[key];
+      const depIds = group.map((x) => x.id);
+      await dependenceService.reInstall(depIds as number[]);
     }
   });
 
-  // 初始化更新所有任务状态为空闲
-  cronDb.update(
-    { status: { $in: [CrontabStatus.running, CrontabStatus.queued] } },
-    { $set: { status: CrontabStatus.idle } },
-    { multi: true },
-  );
-
   // 初始化时执行一次所有的ql repo 任务
-  cronDb
-    .find({
-      command: /ql (repo|raw)/,
-      isDisabled: { $ne: 1 },
-    })
-    .exec((err, docs) => {
-      for (let i = 0; i < docs.length; i++) {
-        const doc = docs[i];
-        if (doc) {
-          exec(doc.command);
+  CrontabModel.findAll({
+    where: {
+      isDisabled: { [Op.ne]: 1 },
+      command: {
+        [Op.or]: [{ [Op.like]: `%ql repo%` }, { [Op.like]: `%ql raw%` }],
+      },
+    },
+  }).then((docs) => {
+    for (let i = 0; i < docs.length; i++) {
+      const doc = docs[i];
+      if (doc) {
+        exec(doc.command);
+      }
+    }
+  });
+
+  // 更新2.11.3以前的脚本路径
+  CrontabModel.findAll({
+    where: {
+      command: {
+        [Op.or]: [
+          { [Op.like]: `%\/${config.rootPath}\/scripts\/%` },
+          { [Op.like]: `%\/${config.rootPath}\/config\/%` },
+          { [Op.like]: `%\/${config.rootPath}\/log\/%` },
+          { [Op.like]: `%\/${config.rootPath}\/db\/%` },
+        ],
+      },
+    },
+  }).then(async (docs) => {
+    for (let i = 0; i < docs.length; i++) {
+      const doc = docs[i];
+      if (doc) {
+        if (doc.command.includes(`${config.rootPath}/scripts/`)) {
+          await CrontabModel.update(
+            { command: doc.command.replace(`${config.rootPath}/scripts/`, '') },
+            { where: { id: doc.id } },
+          );
+        }
+        if (doc.command.includes(`${config.rootPath}/log/`)) {
+          await CrontabModel.update(
+            {
+              command: `${config.rootPath}/data/log/${doc.command.replace(
+                `${config.rootPath}/log/`,
+                '',
+              )}`,
+            },
+            { where: { id: doc.id } },
+          );
+        }
+        if (doc.command.includes(`${config.rootPath}/config/`)) {
+          await CrontabModel.update(
+            {
+              command: `${config.rootPath}/data/config/${doc.command.replace(
+                `${config.rootPath}/config/`,
+                '',
+              )}`,
+            },
+            { where: { id: doc.id } },
+          );
+        }
+        if (doc.command.includes(`${config.rootPath}/db/`)) {
+          await CrontabModel.update(
+            {
+              command: `${config.rootPath}/data/db/${doc.command.replace(
+                `${config.rootPath}/db/`,
+                '',
+              )}`,
+            },
+            { where: { id: doc.id } },
+          );
         }
       }
-    });
-
-  // patch 禁用状态字段改变
-  cronDb
-    .find({
-      status: CrontabStatus.disabled,
-    })
-    .exec((err, docs) => {
-      if (docs.length > 0) {
-        const ids = docs.map((x) => x._id);
-        cronDb.update(
-          { _id: { $in: ids } },
-          { $set: { status: CrontabStatus.idle, isDisabled: 1 } },
-          { multi: true },
-          (err) => {
-            cronService.autosave_crontab();
-          },
-        );
-      }
-    });
+    }
+  });
 
   // 初始化保存一次ck和定时任务数据
   await cronService.autosave_crontab();
   await envService.set_envs();
 };
-
-function randomSchedule(from: number, to: number) {
-  const result = [];
-  const arr = [...Array(from).keys()];
-  let count = arr.length;
-  for (let i = 0; i < to; i++) {
-    const index = ~~(Math.random() * count) + i;
-    if (result.includes(arr[index])) {
-      continue;
-    }
-    result[i] = arr[index];
-    arr[index] = arr[i];
-    count--;
-  }
-  return result;
-}

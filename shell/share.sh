@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 
 ## 目录
-dir_root=/ql
+dir_root=$QL_DIR
+dir_data=$dir_root/data
 dir_shell=$dir_root/shell
 dir_sample=$dir_root/sample
-dir_config=$dir_root/config
-dir_scripts=$dir_root/scripts
-dir_repo=$dir_root/repo
-dir_raw=$dir_root/raw
-dir_log=$dir_root/log
-dir_db=$dir_root/db
+dir_static=$dir_root/static
+dir_config=$dir_data/config
+dir_scripts=$dir_data/scripts
+dir_repo=$dir_data/repo
+dir_raw=$dir_data/raw
+dir_log=$dir_data/log
+dir_db=$dir_data/db
+dir_dep=$dir_data/deps
 dir_list_tmp=$dir_log/.tmp
-dir_code=$dir_log/code
 dir_update_log=$dir_log/update
 ql_static_repo=$dir_repo/static
 
@@ -32,7 +34,10 @@ file_notify_py_sample=$dir_sample/notify.py
 file_notify_py=$dir_scripts/notify.py
 file_notify_js=$dir_scripts/sendNotify.js
 task_error_log_path=$dir_log/task_error.log
-nginx_conf=$dir_root/docker/front.conf
+nginx_app_conf=$dir_root/docker/front.conf
+nginx_conf=$dir_root/docker/nginx.conf
+dep_notify_py=$dir_dep/notify.py
+dep_notify_js=$dir_dep/sendNotify.js
 
 ## 清单文件
 list_crontab_user=$dir_config/crontab.list
@@ -46,26 +51,43 @@ list_own_drop=$dir_list_tmp/own_drop.list
 link_name=(
     task
     ql
-    notify
 )
 original_name=(
     task.sh
     update.sh
-    notify.sh
 )
 
 init_env() {
-    export NODE_PATH=/usr/local/bin:/usr/local/pnpm-global/5/node_modules:/usr/local/lib/node_modules
+    export NODE_PATH=/usr/local/bin:/usr/local/pnpm-global/5/node_modules:/usr/local/lib/node_modules:/root/.local/share/pnpm/global/5/node_modules
+    export PYTHONUNBUFFERED=1
 }
 
 import_config() {
-    [ -f $file_config_user ] && . $file_config_user
-    [ -f $file_env ] && . $file_env
+    [[ -f $file_config_user ]] && . $file_config_user
+    [[ -f $file_env ]] && . $file_env
 
     command_timeout_time=${CommandTimeoutTime:-"1h"}
-    github_proxy_url=${GithubProxyUrl:-""}
+    proxy_url=${ProxyUrl:-""}
     file_extensions=${RepoFileExtensions:-"js py"}
-    default_cron="$(random_range 0 59) $(random_range 0 23) * * *"
+    current_branch=${QL_BRANCH}
+
+    if [[ -n "${DefaultCronRule}" ]]; then
+        default_cron="${DefaultCronRule}"
+    else
+        default_cron="$(random_range 0 59) $(random_range 0 23) * * *"
+    fi
+}
+
+set_proxy() {
+    if [[ $proxy_url ]]; then
+        export http_proxy="${proxy_url}"
+        export https_proxy="${proxy_url}"
+    fi
+}
+
+unset_proxy() {
+    unset http_proxy
+    unset https_proxy
 }
 
 make_dir() {
@@ -76,7 +98,7 @@ make_dir() {
 }
 
 detect_termux() {
-    if [[ ${ANDROID_RUNTIME_ROOT}${ANDROID_ROOT} ]] || [[ $PATH == *com.termux* ]]; then
+    if [[ $PATH == *com.termux* ]]; then
         is_termux=1
     else
         is_termux=0
@@ -95,7 +117,7 @@ gen_random_num() {
 link_shell_sub() {
     local link_path="$1"
     local original_path="$2"
-    if [ ! -L $link_path ] || [[ $(readlink -f $link_path) != $original_path ]]; then
+    if [[ ! -L $link_path ]] || [[ $(readlink -f $link_path) != $original_path ]]; then
         rm -f $link_path 2>/dev/null
         ln -sf $original_path $link_path
     fi
@@ -104,7 +126,7 @@ link_shell_sub() {
 link_shell() {
     if [[ $is_termux -eq 1 ]]; then
         local path="/data/data/com.termux/files/usr/bin/"
-    elif [[ $PATH == */usr/local/bin* ]] && [ -d /usr/local/bin ]; then
+    elif [[ $PATH == */usr/local/bin* ]] && [[ -d /usr/local/bin ]]; then
         local path="/usr/local/bin/"
     else
         local path=""
@@ -119,16 +141,16 @@ link_shell() {
 
 define_cmd() {
     local cmd_prefix cmd_suffix
-    if type task >/dev/null 2>&1; then
+    if type task &>/dev/null; then
         cmd_suffix=""
-        if [ -x "$dir_shell/task.sh" ]; then
+        if [[ -f "$dir_shell/task.sh" ]]; then
             cmd_prefix=""
         else
             cmd_prefix="bash "
         fi
     else
         cmd_suffix=".sh"
-        if [ -x "$dir_shell/task.sh" ]; then
+        if [[ -f "$dir_shell/task.sh" ]]; then
             cmd_prefix="$dir_shell/"
         else
             cmd_prefix="bash $dir_shell/"
@@ -140,6 +162,8 @@ define_cmd() {
 }
 
 fix_config() {
+    make_dir $dir_static
+    make_dir $dir_data
     make_dir $dir_config
     make_dir $dir_log
     make_dir $dir_db
@@ -148,70 +172,86 @@ fix_config() {
     make_dir $dir_repo
     make_dir $dir_raw
     make_dir $dir_update_log
+    make_dir $dir_dep
 
-    if [ ! -s $file_config_user ]; then
+    if [[ ! -s $file_config_user ]]; then
         echo -e "复制一份 $file_config_sample 为 $file_config_user，随后请按注释编辑你的配置文件：$file_config_user\n"
         cp -fv $file_config_sample $file_config_user
         echo
     fi
 
-    if [ ! -f $file_env ]; then
+    if [[ ! -f $file_env ]]; then
         echo -e "检测到config配置目录下不存在env.sh，创建一个空文件用于初始化...\n"
         touch $file_env
         echo
     fi
 
-    if [ ! -f $file_task_before ]; then
+    if [[ ! -f $file_task_before ]]; then
         echo -e "复制一份 $file_task_sample 为 $file_task_before\n"
         cp -fv $file_task_sample $file_task_before
         echo
     fi
 
-    if [ ! -f $file_task_after ]; then
+    if [[ ! -f $file_task_after ]]; then
         echo -e "复制一份 $file_task_sample 为 $file_task_after\n"
         cp -fv $file_task_sample $file_task_after
         echo
     fi
 
-    if [ ! -f $file_extra_shell ]; then
+    if [[ ! -f $file_extra_shell ]]; then
         echo -e "复制一份 $file_extra_sample 为 $file_extra_shell\n"
         cp -fv $file_extra_sample $file_extra_shell
         echo
     fi
 
-    if [ ! -s $file_auth_user ]; then
+    if [[ ! -s $file_auth_user ]]; then
         echo -e "复制一份 $file_auth_sample 为 $file_auth_user\n"
         cp -fv $file_auth_sample $file_auth_user
         echo
     fi
 
-    if [ ! -s $file_notify_py ]; then
+    if [[ ! -s $file_notify_py ]]; then
         echo -e "复制一份 $file_notify_py_sample 为 $file_notify_py\n"
         cp -fv $file_notify_py_sample $file_notify_py
         echo
     fi
 
-    if [ ! -s $file_notify_js ]; then
+    if [[ ! -s $file_notify_js ]]; then
         echo -e "复制一份 $file_notify_js_sample 为 $file_notify_js\n"
         cp -fv $file_notify_js_sample $file_notify_js
         echo
     fi
 
-    if [ -s /etc/nginx/conf.d/default.conf ]; then
+    if [[ -s /etc/nginx/conf.d/default.conf ]]; then
         echo -e "检测到默认nginx配置文件，清空...\n"
-        echo '' > /etc/nginx/conf.d/default.conf
+        cat /dev/null >/etc/nginx/conf.d/default.conf
         echo
     fi
+
+    if [[ ! -s $dep_notify_js ]]; then
+        echo -e "复制一份 $file_notify_js_sample 为 $dep_notify_js\n"
+        cp -fv $file_notify_js_sample $dep_notify_js
+        echo
+    fi
+
+    if [[ ! -s $dep_notify_py ]]; then
+        echo -e "复制一份 $file_notify_py_sample 为 $dep_notify_py\n"
+        cp -fv $file_notify_py_sample $dep_notify_py
+        echo
+    fi
+
 }
 
 npm_install_sub() {
+    set_proxy
     if [ $is_termux -eq 1 ]; then
-        npm install --production --no-save --no-bin-links --registry=https://registry.npm.taobao.org || npm install --production --no-bin-links --no-save
-    elif ! type pnpm >/dev/null 2>&1; then
-        npm install --production --no-save --registry=https://registry.npm.taobao.org || npm install --production --no-save
+        npm install --production --no-bin-links --registry=https://registry.npmmirror.com || npm install --production --no-bin-links
+    elif ! type pnpm &>/dev/null; then
+        npm install --production --registry=https://registry.npmmirror.com || npm install --production
     else
-        pnpm install --prod
+        pnpm install --loglevel error --production --registry=https://registry.npmmirror.com || pnpm install --production --loglevel error
     fi
+    unset_proxy
 }
 
 npm_install_1() {
@@ -242,7 +282,7 @@ npm_install_2() {
 diff_and_copy() {
     local copy_source=$1
     local copy_to=$2
-    if [ ! -s $copy_to ] || [[ $(diff $copy_source $copy_to) ]]; then
+    if [[ ! -s $copy_to ]] || [[ $(diff $copy_source $copy_to) ]]; then
         cp -f $copy_source $copy_to
     fi
 }
@@ -250,15 +290,9 @@ diff_and_copy() {
 update_depend() {
     local dir_current=$(pwd)
 
-    if [ ! -s $dir_scripts/package.json ] || [[ $(diff $dir_sample/package.json $dir_scripts/package.json) ]]; then
+    if [[ ! -s $dir_scripts/package.json ]] || [[ $(diff $dir_sample/package.json $dir_scripts/package.json) ]]; then
         cp -f $dir_sample/package.json $dir_scripts/package.json
         npm_install_2 $dir_scripts
-    fi
-
-    if [ ! -s $dir_scripts/requirements.txt ] || [[ $(diff $dir_sample/requirements.txt $dir_scripts/requirements.txt) ]]; then
-        cp -f $dir_sample/requirements.txt $dir_scripts/requirements.txt
-        cd $dir_scripts
-        pip3 install -r $dir_scripts/requirements.txt
     fi
 
     cd $dir_current
@@ -268,23 +302,29 @@ git_clone_scripts() {
     local url=$1
     local dir=$2
     local branch=$3
-    [[ $branch ]] && local cmd="-b $branch "
+    [[ $branch ]] && local part_cmd="-b $branch "
     echo -e "开始克隆仓库 $url 到 $dir\n"
-    git clone $cmd $url $dir
+
+    set_proxy
+    git clone $part_cmd $url $dir
     exit_status=$?
+    unset_proxy
 }
 
 git_pull_scripts() {
     local dir_current=$(pwd)
     local dir_work="$1"
     local branch="$2"
-    [[ $branch ]] && local cmd="origin/${branch}"
     cd $dir_work
     echo -e "开始更新仓库：$dir_work\n"
+
+    set_proxy
     git fetch --all
     exit_status=$?
-    git reset --hard $cmd
-    git pull
+    git pull &>/dev/null
+    unset_proxy
+    reset_branch "$branch"
+
     cd $dir_current
 }
 
@@ -294,14 +334,25 @@ reset_romote_url() {
     local url=$2
     local branch="$3"
 
-    [[ $branch ]] && local cmd="origin/${branch}"
-
-    if [ -d "$dir_work/.git" ]; then
+    if [[ -d "$dir_work/.git" ]]; then
         cd $dir_work
-        git remote set-url origin $url >/dev/null
-        git reset --hard $cmd >/dev/null
+        [[ -f ".git/index.lock" ]] && rm -f .git/index.lock >/dev/null
+        git remote set-url origin $url &>/dev/null
+
+        local part_cmd=""
+        reset_branch "$branch"
         cd $dir_current
     fi
+}
+
+reset_branch() {
+    local branch="$1"
+    if [[ $branch ]]; then
+        part_cmd="origin/${branch}"
+        git checkout -B "$branch"
+        git branch --set-upstream-to=$part_cmd $branch
+    fi
+    git reset --hard $part_cmd &>/dev/null
 }
 
 random_range() {
@@ -310,10 +361,72 @@ random_range() {
     echo $((RANDOM % ($end - $beg) + $beg))
 }
 
+reload_pm2() {
+    pm2 l &>/dev/null
+
+    echo -e "启动面板服务\n"
+    pm2 delete panel --source-map-support --time &>/dev/null
+    pm2 start $dir_static/build/app.js -n panel --source-map-support --time &>/dev/null
+
+    echo -e "启动定时任务服务\n"
+    pm2 delete schedule --source-map-support --time &>/dev/null
+    pm2 start $dir_static/build/schedule.js -n schedule --source-map-support --time &>/dev/null
+
+    echo -e "启动公开服务\n"
+    pm2 delete public --source-map-support --time &>/dev/null
+    pm2 start $dir_static/build/public.js -n public --source-map-support --time &>/dev/null
+}
+
+diff_time() {
+    local format="$1"
+    local begin_time="$2"
+    local end_time="$3"
+
+    if [[ $is_macos -eq 1 ]]; then
+        diff_time=$(($(date -j -f "$format" "$end_time" +%s) - $(date -j -f "$format" "$begin_time" +%s)))
+    else
+        diff_time=$(($(date +%s -d "$end_time") - $(date +%s -d "$begin_time")))
+    fi
+    echo "$diff_time"
+}
+
+format_time() {
+    local format="$1"
+    local time="$2"
+
+    if [[ $is_macos -eq 1 ]]; then
+        echo $(date -j -f "$format" "$time" "+%Y-%m-%d %H:%M:%S")
+    else
+        echo $(date -d "$time" "+%Y-%m-%d %H:%M:%S")
+    fi
+}
+
+format_log_time() {
+    local format="$1"
+    local time="$2"
+
+    if [[ $is_macos -eq 1 ]]; then
+        echo $(date -j -f "$format" "$time" "+%Y-%m-%d-%H-%M-%S")
+    else
+        echo $(date -d "$time" "+%Y-%m-%d-%H-%M-%S")
+    fi
+}
+
+format_timestamp() {
+    local format="$1"
+    local time="$2"
+
+    if [[ $is_macos -eq 1 ]]; then
+        echo $(date -j -f "$format" "$time" "+%s")
+    else
+        echo $(date -d "$time" "+%s")
+    fi
+}
+
 init_env
 detect_termux
 detect_macos
 define_cmd
+fix_config
 
-[ -f $task_error_log_path ] && rm $task_error_log_path
-import_config $1 >> $task_error_log_path 2>&1
+import_config $1 >$task_error_log_path 2>&1

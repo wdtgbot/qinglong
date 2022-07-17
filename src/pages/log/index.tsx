@@ -1,12 +1,11 @@
 import { useState, useEffect, useCallback, Key, useRef } from 'react';
-import { TreeSelect, Tree, Input } from 'antd';
+import { TreeSelect, Tree, Input, Empty } from 'antd';
 import config from '@/utils/config';
 import { PageContainer } from '@ant-design/pro-layout';
 import Editor from '@monaco-editor/react';
 import { request } from '@/utils/http';
 import styles from './index.module.less';
 import { Controlled as CodeMirror } from 'react-codemirror2';
-import { useCtx, useTheme } from '@/utils/hooks';
 import SplitPane from 'react-split-pane';
 
 function getFilterData(keyword: string, data: any) {
@@ -16,7 +15,6 @@ function getFilterData(keyword: string, data: any) {
     data.forEach((item: any) => {
       if (item.title.toLocaleLowerCase().includes(keyword)) {
         tree.push(item);
-        expandedKeys.push(...item.children.map((x: any) => x.key));
       } else {
         const children: any[] = [];
         (item.children || []).forEach((subItem: any) => {
@@ -29,7 +27,7 @@ function getFilterData(keyword: string, data: any) {
             ...item,
             children,
           });
-          expandedKeys.push(...children.map((x) => x.key));
+          expandedKeys.push(item.key);
         }
       }
     });
@@ -41,52 +39,40 @@ function getFilterData(keyword: string, data: any) {
 const Log = ({ headerStyle, isPhone, theme }: any) => {
   const [title, setTitle] = useState('请选择日志文件');
   const [value, setValue] = useState('请选择日志文件');
-  const [select, setSelect] = useState();
+  const [select, setSelect] = useState<any>();
   const [data, setData] = useState<any[]>([]);
   const [filterData, setFilterData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [height, setHeight] = useState<number>();
   const treeDom = useRef<any>();
+  const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
 
   const getLogs = () => {
     setLoading(true);
     request
       .get(`${config.apiPrefix}logs`)
       .then((data) => {
-        const result = formatData(data.dirs) as any;
-        setData(result);
-        setFilterData(result);
+        setData(data.data);
+        setFilterData(data.data);
       })
       .finally(() => setLoading(false));
   };
 
-  const formatData = (tree: any[]) => {
-    return tree.map((x) => {
-      x.title = x.name;
-      x.value = x.name;
-      x.disabled = x.isDir;
-      x.key = x.name;
-      x.children = x.files.map((y: string) => ({
-        title: y,
-        value: `${x.name}/${y}`,
-        key: `${x.name}/${y}`,
-        parent: x.name,
-        isLeaf: true,
-      }));
-      return x;
-    });
-  };
-
   const getLog = (node: any) => {
-    request.get(`${config.apiPrefix}logs/${node.value}`).then((data) => {
-      setValue(data.data);
-    });
+    request
+      .get(`${config.apiPrefix}logs/${node.title}?path=${node.parent || ''}`)
+      .then((data) => {
+        setValue(data.data);
+      });
   };
 
   const onSelect = (value: any, node: any) => {
+    if (node.key === select || !value) {
+      return;
+    }
     setValue('加载中...');
     setSelect(value);
-    setTitle(node.parent || node.value);
+    setTitle(node.key);
     getLog(node);
   };
 
@@ -97,15 +83,21 @@ const Log = ({ headerStyle, isPhone, theme }: any) => {
   const onSearch = useCallback(
     (e) => {
       const keyword = e.target.value;
-      const { tree } = getFilterData(keyword.toLocaleLowerCase(), data);
+      const { tree, expandedKeys } = getFilterData(
+        keyword.toLocaleLowerCase(),
+        data,
+      );
       setFilterData(tree);
+      setExpandedKeys(expandedKeys);
     },
     [data, setFilterData],
   );
 
   useEffect(() => {
     getLogs();
-    setHeight(treeDom.current.clientHeight);
+    if (treeDom && treeDom.current) {
+      setHeight(treeDom.current.clientHeight);
+    }
   }, []);
 
   return (
@@ -120,9 +112,9 @@ const Log = ({ headerStyle, isPhone, theme }: any) => {
             value={select}
             dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
             treeData={data}
-            placeholder="请选择日志文件"
+            placeholder="请选择日志"
+            fieldNames={{ value: 'key', label: 'title' }}
             showSearch
-            key="value"
             onSelect={onSelect}
           />,
         ]
@@ -135,20 +127,41 @@ const Log = ({ headerStyle, isPhone, theme }: any) => {
         {!isPhone && (
           <SplitPane split="vertical" size={200} maxSize={-100}>
             <div className={styles['left-tree-container']}>
-              <Input.Search
-                className={styles['left-tree-search']}
-                onChange={onSearch}
-              ></Input.Search>
-              <div className={styles['left-tree-scroller']} ref={treeDom}>
-                <Tree
-                  className={styles['left-tree']}
-                  treeData={filterData}
-                  showIcon={true}
-                  height={height}
-                  showLine={{ showLeafIcon: true }}
-                  onSelect={onTreeSelect}
-                ></Tree>
-              </div>
+              {data.length > 0 ? (
+                <>
+                  <Input.Search
+                    className={styles['left-tree-search']}
+                    onChange={onSearch}
+                    placeholder="请输入日志名"
+                    allowClear
+                  ></Input.Search>
+                  <div className={styles['left-tree-scroller']} ref={treeDom}>
+                    <Tree
+                      className={styles['left-tree']}
+                      treeData={filterData}
+                      showIcon={true}
+                      height={height}
+                      selectedKeys={[select]}
+                      showLine={{ showLeafIcon: true }}
+                      onSelect={onTreeSelect}
+                    ></Tree>
+                  </div>
+                </>
+              ) : (
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    height: '100%',
+                  }}
+                >
+                  <Empty
+                    description="暂无日志"
+                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  />
+                </div>
+              )}
             </div>
             <Editor
               language="shell"

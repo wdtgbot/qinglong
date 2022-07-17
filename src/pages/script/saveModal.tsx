@@ -7,19 +7,17 @@ const SaveModal = ({
   file,
   handleCancel,
   visible,
-  isNewFile,
 }: {
   file?: any;
   visible: boolean;
   handleCancel: (cks?: any[]) => void;
-  isNewFile: boolean;
 }) => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
 
   const handleOk = async (values: any) => {
     setLoading(true);
-    const payload = { ...file, ...values };
+    const payload = { ...file, ...values, originFilename: file.filename };
     request
       .post(`${config.apiPrefix}scripts`, {
         data: payload,
@@ -45,6 +43,8 @@ const SaveModal = ({
       title="保存文件"
       visible={visible}
       forceRender
+      centered
+      maskClosable={false}
       onOk={() => {
         form
           .validateFields()
@@ -71,12 +71,8 @@ const SaveModal = ({
         >
           <Input placeholder="请输入文件名" />
         </Form.Item>
-        <Form.Item
-          name="path"
-          label="保存目录"
-          rules={[{ required: true, message: '请输入保存目录' }]}
-        >
-          <Input placeholder="请输入保存目录" />
+        <Form.Item name="path" label="保存目录">
+          <Input placeholder="请输入保存目录，默认scripts目录" />
         </Form.Item>
       </Form>
     </Modal>

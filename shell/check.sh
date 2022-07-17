@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 
-dir_shell=/ql/shell
+dir_shell=$QL_DIR/shell
 . $dir_shell/share.sh
 . $dir_shell/api.sh
-get_token
 
 reset_env() {
   echo -e "---> 1. 开始检测配置文件\n"
@@ -30,32 +29,17 @@ copy_dep() {
   echo -e "---> 通知文件复制完成\n"
 
   echo -e "---> 2. 复制nginx配置文件\n"
-  cp -fv $nginx_conf /etc/nginx/conf.d/front.conf
+  cp -fv $nginx_conf /etc/nginx/nginx.conf
+  cp -fv $nginx_app_conf /etc/nginx/conf.d/front.conf
   echo -e "---> 配置文件复制完成\n"
-}
-
-reload_pm2() {
-  pm2 l >/dev/null 2>&1
-
-  if [[ $(pm2 info panel 2>/dev/null) ]]; then
-    pm2 reload panel --source-map-support --time >/dev/null 2>&1
-  else
-    pm2 start $dir_root/build/app.js -n panel --source-map-support --time >/dev/null 2>&1
-  fi
-
-  if [[ $(pm2 info schedule 2>/dev/null) ]]; then
-    pm2 reload schedule --source-map-support --time >/dev/null 2>&1
-  else
-    pm2 start $dir_root/build/schedule.js -n schedule --source-map-support --time >/dev/null 2>&1
-  fi
 }
 
 pm2_log() {
   echo -e "---> pm2日志"
   local panelOut="/root/.pm2/logs/panel-out.log"
   local panelError="/root/.pm2/logs/panel-error.log"
-  tail -n 20 "$panelOut"
-  tail -n 20 "$panelError"
+  tail -n 100 "$panelOut"
+  tail -n 100 "$panelError"
 }
 
 check_nginx() {
@@ -102,20 +86,10 @@ check_pm2() {
   fi
 }
 
-init_git() {
-  local dir_current=$(pwd)
-
-  cd $dir_root
-  git config --global user.email "qinglong@@users.noreply.github.com"
-  git config --global user.name "qinglong"
-  git config --global pull.rebase true
-
-  cd $dir_current
-}
-
 main() {
   echo -e "=====> 开始检测"
-  init_git
+  npm i -g pnpm
+  pnpm add -g pm2
   copy_dep
   check_ql
   check_nginx

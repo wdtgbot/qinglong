@@ -2,30 +2,18 @@ import schedule from 'node-schedule';
 import express from 'express';
 import { exec } from 'child_process';
 import Logger from './loaders/logger';
-import { Container } from 'typedi';
-import CronService from './services/cron';
-import { CrontabStatus } from './data/cron';
+import { CrontabModel, CrontabStatus } from './data/cron';
 import config from './config';
 
 const app = express();
 
 const run = async () => {
-  const cronService = Container.get(CronService);
-  const cronDb = cronService.getDb();
-
-  cronDb
-    .find({})
-    .sort({ created: 1 })
-    .exec((err, docs) => {
-      if (err) {
-        Logger.error(err);
-        process.exit(1);
-      }
-
+  CrontabModel.findAll({ where: {} })
+    .then((docs) => {
       if (docs && docs.length > 0) {
         for (let i = 0; i < docs.length; i++) {
           const task = docs[i];
-          const _schedule = task.schedule && task.schedule.split(' ');
+          const _schedule = task.schedule && task.schedule.split(/ +/);
           if (
             _schedule &&
             _schedule.length > 5 &&
@@ -42,12 +30,19 @@ const run = async () => {
           }
         }
       }
+    })
+    .catch((err) => {
+      Logger.error(err);
+      process.exit(1);
     });
 };
 
 app
-  .listen(config.cronPort, () => {
-    run();
+  .listen(config.cronPort, async () => {
+    await require('./loaders/sentry').default({ expressApp: app });
+    await require('./loaders/db').default();
+
+    await run();
     Logger.info(`
       ################################################
       🛡️  Schedule listening on port: ${config.cronPort} 🛡️

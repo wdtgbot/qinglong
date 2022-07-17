@@ -8,10 +8,10 @@ import { celebrate, Joi } from 'celebrate';
 const route = Router();
 
 export default (app: Router) => {
-  app.use('/', route);
+  app.use('/configs', route);
 
   route.get(
-    '/configs/files',
+    '/files',
     async (req: Request, res: Response, next: NextFunction) => {
       const logger: Logger = Container.get('logger');
       try {
@@ -25,18 +25,20 @@ export default (app: Router) => {
             }),
         });
       } catch (e) {
-        logger.error('🔥 error: %o', e);
         return next(e);
       }
     },
   );
 
   route.get(
-    '/configs/:file',
+    '/:file',
     async (req: Request, res: Response, next: NextFunction) => {
       const logger: Logger = Container.get('logger');
       try {
         let content = '';
+        if (config.blackFileList.includes(req.params.file)) {
+          res.send({ code: 403, message: '文件无法访问' });
+        }
         if (req.params.file.includes('sample')) {
           content = getFileContentByName(
             `${config.samplePath}${req.params.file}`,
@@ -48,14 +50,13 @@ export default (app: Router) => {
         }
         res.send({ code: 200, data: content });
       } catch (e) {
-        logger.error('🔥 error: %o', e);
         return next(e);
       }
     },
   );
 
   route.post(
-    '/configs/save',
+    '/save',
     celebrate({
       body: Joi.object({
         name: Joi.string().required(),
@@ -66,11 +67,13 @@ export default (app: Router) => {
       const logger: Logger = Container.get('logger');
       try {
         const { name, content } = req.body;
+        if (config.blackFileList.includes(name)) {
+          res.send({ code: 403, message: '文件无法访问' });
+        }
         const path = `${config.configPath}${name}`;
         fs.writeFileSync(path, content);
         res.send({ code: 200, message: '保存成功' });
       } catch (e) {
-        logger.error('🔥 error: %o', e);
         return next(e);
       }
     },

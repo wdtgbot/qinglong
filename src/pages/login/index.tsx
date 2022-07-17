@@ -12,49 +12,40 @@ import config from '@/utils/config';
 import { history, Link } from 'umi';
 import styles from './index.less';
 import { request } from '@/utils/http';
+import { useTheme } from '@/utils/hooks';
+import { MobileOutlined } from '@ant-design/icons';
 
 const FormItem = Form.Item;
 const { Countdown } = Statistic;
 
-const Login = () => {
+const Login = ({ reloadUser }: any) => {
   const [loading, setLoading] = useState(false);
   const [waitTime, setWaitTime] = useState<any>();
+  const { theme } = useTheme();
+  const [twoFactor, setTwoFactor] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [loginInfo, setLoginInfo] = useState<any>();
 
   const handleOk = (values: any) => {
     setLoading(true);
+    setTwoFactor(false);
     setWaitTime(null);
     request
-      .post(`${config.apiPrefix}login`, {
+      .post(`${config.apiPrefix}user/login`, {
         data: {
           username: values.username,
           password: values.password,
         },
       })
       .then((data) => {
-        if (data.code === 200) {
-          const { token, lastip, lastaddr, lastlogon } = data.data;
-          localStorage.setItem(config.authKey, token);
-          notification.success({
-            message: '登录成功！',
-            description: (
-              <div>
-                <div>
-                  最后登录时间：{new Date(lastlogon).toLocaleString() || '-'}
-                </div>
-                <div>最后登录地点：{lastaddr || '-'}</div>
-                <div>最后登录IP：{lastip || '-'}</div>
-              </div>
-            ),
-            duration: 5,
+        if (data.code === 420) {
+          setLoginInfo({
+            username: values.username,
+            password: values.password,
           });
-          history.push('/crontab');
-        } else if (data.code === 100) {
-          message.warn(data.message);
-        } else if (data.code === 410) {
-          message.error(data.message);
-          setWaitTime(data.data);
+          setTwoFactor(true);
         } else {
-          message.error(data.message);
+          checkResponse(data);
         }
         setLoading(false);
       })
@@ -62,6 +53,72 @@ const Login = () => {
         console.log(error);
         setLoading(false);
       });
+  };
+
+  const completeTowFactor = (values: any) => {
+    setVerifying(true);
+    request
+      .put(`${config.apiPrefix}user/two-factor/login`, {
+        data: { ...loginInfo, code: values.code },
+      })
+      .then((data: any) => {
+        if (data.code === 430) {
+          message.error(data.message);
+        } else {
+          checkResponse(data);
+        }
+        setVerifying(false);
+      })
+      .catch((error: any) => {
+        console.log(error);
+        setVerifying(false);
+      });
+  };
+
+  const checkResponse = (data: any) => {
+    if (data.code === 200) {
+      const {
+        token,
+        lastip,
+        lastaddr,
+        lastlogon,
+        retries = 0,
+        platform,
+      } = data.data;
+      localStorage.setItem(config.authKey, token);
+      notification.success({
+        message: '登录成功！',
+        description: (
+          <>
+            <div>
+              上次登录时间：
+              {lastlogon ? new Date(lastlogon).toLocaleString() : '-'}
+            </div>
+            <div>上次登录地点：{lastaddr || '-'}</div>
+            <div>上次登录IP：{lastip || '-'}</div>
+            <div>上次登录设备：{platform || '-'}</div>
+            <div>上次登录状态：{retries > 0 ? `失败${retries}次` : '成功'}</div>
+          </>
+        ),
+      });
+      reloadUser(true);
+      history.push('/crontab');
+    } else if (data.code === 100) {
+      message.warn(data.message);
+    } else if (data.code === 410) {
+      message.error(data.message);
+      setWaitTime(data.data);
+    } else {
+      message.error(data.message);
+    }
+  };
+
+  const codeInputChange = (e: React.ChangeEvent) => {
+    const { value } = e.target as any;
+    const regx = /^[0-9]{6}$/;
+    if (regx.test(value)) {
+      completeTowFactor({ code: value });
+    }
   };
 
   useEffect(() => {
@@ -73,31 +130,53 @@ const Login = () => {
 
   return (
     <div className={styles.container}>
-      <div className={styles.content}>
-        <div className={styles.top}>
-          <div className={styles.header}>
-            <img
-              alt="logo"
-              className={styles.logo}
-              src="/images/qinglong.png"
-            />
-            <span className={styles.title}>{config.siteName}</span>
-          </div>
+      <div className={styles.top}>
+        <div className={styles.header}>
+          <img
+            alt="logo"
+            className={styles.logo}
+            src="http://qn.whyour.cn/logo.png"
+          />
+          <span className={styles.title}>
+            {twoFactor ? '两步验证' : config.siteName}
+          </span>
         </div>
-        <div className={styles.main}>
-          <Form onFinish={handleOk}>
+      </div>
+      <div className={styles.main}>
+        {twoFactor ? (
+          <Form layout="vertical" onFinish={completeTowFactor}>
             <FormItem
-              name="username"
-              rules={[{ required: true, message: '请输入用户名' }]}
-              hasFeedback
+              name="code"
+              label="验证码"
+              rules={[
+                {
+                  pattern: /^[0-9]{6}$/,
+                  message: '验证码为6位数字',
+                },
+              ]}
             >
+              <Input
+                placeholder="6位数字"
+                onChange={codeInputChange}
+                autoFocus
+                autoComplete="off"
+              />
+            </FormItem>
+            <Button
+              type="primary"
+              htmlType="submit"
+              style={{ width: '100%' }}
+              loading={verifying}
+            >
+              验证
+            </Button>
+          </Form>
+        ) : (
+          <Form layout="vertical" onFinish={handleOk}>
+            <FormItem name="username" label="用户名" hasFeedback>
               <Input placeholder="用户名" autoFocus />
             </FormItem>
-            <FormItem
-              name="password"
-              rules={[{ required: true, message: '请输入密码' }]}
-              hasFeedback
-            >
+            <FormItem name="password" label="密码" hasFeedback>
               <Input type="password" placeholder="密码" />
             </FormItem>
             <Row>
@@ -105,7 +184,12 @@ const Login = () => {
                 <Button type="primary" style={{ width: '100%' }} disabled>
                   请
                   <Countdown
-                    valueStyle={{ color: 'rgba(232, 230, 227, 0.25)' }}
+                    valueStyle={{
+                      color:
+                        theme === 'vs'
+                          ? 'rgba(0,0,0,.25)'
+                          : 'rgba(232, 230, 227, 0.25)',
+                    }}
                     className="inline-countdown"
                     onFinish={() => setWaitTime(null)}
                     format="ss"
@@ -125,7 +209,17 @@ const Login = () => {
               )}
             </Row>
           </Form>
-        </div>
+        )}
+      </div>
+      <div className={styles.extra}>
+        {twoFactor ? (
+          <div style={{ paddingLeft: 20, position: 'relative' }}>
+            <MobileOutlined style={{ position: 'absolute', left: 0, top: 4 }} />
+            在您的设备上打开两步验证应用程序以查看您的身份验证代码并验证您的身份。
+          </div>
+        ) : (
+          ''
+        )}
       </div>
     </div>
   );

@@ -3,24 +3,19 @@ import winston from 'winston';
 import { getFileContentByName } from '../config/util';
 import config from '../config';
 import * as fs from 'fs';
-import DataStore from 'nedb';
-import { Env, EnvStatus, initEnvPosition } from '../data/env';
+import { Env, EnvModel, EnvStatus, initEnvPosition } from '../data/env';
 import _ from 'lodash';
+import { Op } from 'sequelize';
 
 @Service()
 export default class EnvService {
-  private cronDb = new DataStore({ filename: config.envDbFile });
-  constructor(@Inject('logger') private logger: winston.Logger) {
-    this.cronDb.loadDatabase((err) => {
-      if (err) throw err;
-    });
-  }
+  constructor(@Inject('logger') private logger: winston.Logger) {}
 
   public async create(payloads: Env[]): Promise<Env[]> {
     const envs = await this.envs();
     let position = initEnvPosition;
     if (envs && envs.length > 0 && envs[envs.length - 1].position) {
-      position = envs[envs.length - 1].position;
+      position = envs[envs.length - 1].position as number;
     }
     const tabs = payloads.map((x) => {
       position = position / 2;
@@ -33,58 +28,32 @@ export default class EnvService {
   }
 
   public async insert(payloads: Env[]): Promise<Env[]> {
-    return new Promise((resolve) => {
-      this.cronDb.insert(payloads, (err, docs) => {
-        if (err) {
-          this.logger.error(err);
-        } else {
-          resolve(docs);
-        }
-      });
-    });
+    const result = [];
+    for (const env of payloads) {
+      const doc = await EnvModel.create(env, { returning: true });
+      result.push(doc);
+    }
+    return result;
   }
 
   public async update(payload: Env): Promise<Env> {
-    const { _id, ...other } = payload;
-    const doc = await this.get(_id);
-    const tab = new Env({ ...doc, ...other });
-    const newDoc = await this.updateDb(tab);
+    const newDoc = await this.updateDb(payload);
     await this.set_envs();
     return newDoc;
   }
 
   private async updateDb(payload: Env): Promise<Env> {
-    return new Promise((resolve) => {
-      this.cronDb.update(
-        { _id: payload._id },
-        payload,
-        { returnUpdatedDocs: true },
-        (err, num, doc) => {
-          if (err) {
-            this.logger.error(err);
-          } else {
-            resolve(doc as Env);
-          }
-        },
-      );
-    });
+    await EnvModel.update({ ...payload }, { where: { id: payload.id } });
+    return await this.getDb({ id: payload.id });
   }
 
   public async remove(ids: string[]) {
-    return new Promise((resolve: any) => {
-      this.cronDb.remove(
-        { _id: { $in: ids } },
-        { multi: true },
-        async (err) => {
-          await this.set_envs();
-          resolve();
-        },
-      );
-    });
+    await EnvModel.destroy({ where: { id: ids } });
+    await this.set_envs();
   }
 
   public async move(
-    _id: string,
+    id: number,
     {
       fromIndex,
       toIndex,
@@ -92,7 +61,7 @@ export default class EnvService {
       fromIndex: number;
       toIndex: number;
     },
-  ) {
+  ): Promise<Env> {
     let targetPosition: number;
     const isUpward = fromIndex > toIndex;
     const envs = await this.envs();
@@ -105,11 +74,11 @@ export default class EnvService {
         ? (envs[toIndex].position + envs[toIndex - 1].position) / 2
         : (envs[toIndex].position + envs[toIndex + 1].position) / 2;
     }
-    this.update({
-      _id,
+    const newDoc = await this.update({
+      id,
       position: targetPosition,
     });
-    await this.set_envs();
+    return newDoc;
   }
 
   public async envs(
@@ -119,14 +88,22 @@ export default class EnvService {
   ): Promise<Env[]> {
     let condition = { ...query };
     if (searchText) {
-      const reg = new RegExp(searchText);
+      const encodeText = encodeURIComponent(searchText);
+      const reg = {
+        [Op.or]: [
+          { [Op.like]: `%${searchText}%` },
+          { [Op.like]: `%${encodeText}%` },
+        ],
+      };
+
       condition = {
-        $or: [
-          {
-            value: reg,
-          },
+        ...condition,
+        [Op.or]: [
           {
             name: reg,
+          },
+          {
+            value: reg,
           },
           {
             remarks: reg,
@@ -134,99 +111,69 @@ export default class EnvService {
         ],
       };
     }
-    const newDocs = await this.find(condition, sort);
-    return newDocs;
+    try {
+      const result = await this.find(condition, [['position', 'DESC']]);
+      return result as any;
+    } catch (error) {
+      throw error;
+    }
   }
 
-  private async find(query: any, sort: any): Promise<Env[]> {
-    return new Promise((resolve) => {
-      this.cronDb
-        .find(query)
-        .sort({ ...sort })
-        .exec((err, docs) => {
-          resolve(docs);
-        });
+  private async find(query: any, sort: any = []): Promise<Env[]> {
+    const docs = await EnvModel.findAll({
+      where: { ...query },
+      order: [...sort],
     });
+    return docs;
   }
 
-  public async get(_id: string): Promise<Env> {
-    return new Promise((resolve) => {
-      this.cronDb.find({ _id }).exec((err, docs) => {
-        resolve(docs[0]);
-      });
-    });
-  }
-
-  public async getBySort(sort: any): Promise<Env> {
-    return new Promise((resolve) => {
-      this.cronDb
-        .find({})
-        .sort({ ...sort })
-        .limit(1)
-        .exec((err, docs) => {
-          resolve(docs[0]);
-        });
-    });
+  public async getDb(query: any): Promise<Env> {
+    const doc: any = await EnvModel.findOne({ where: { ...query } });
+    return doc && (doc.get({ plain: true }) as Env);
   }
 
   public async disabled(ids: string[]) {
-    return new Promise((resolve: any) => {
-      this.cronDb.update(
-        { _id: { $in: ids } },
-        { $set: { status: EnvStatus.disabled } },
-        { multi: true },
-        async (err) => {
-          await this.set_envs();
-          resolve();
-        },
-      );
-    });
+    await EnvModel.update(
+      { status: EnvStatus.disabled },
+      { where: { id: ids } },
+    );
+    await this.set_envs();
   }
 
   public async enabled(ids: string[]) {
-    return new Promise((resolve: any) => {
-      this.cronDb.update(
-        { _id: { $in: ids } },
-        { $set: { status: EnvStatus.normal } },
-        { multi: true },
-        async (err, num) => {
-          await this.set_envs();
-          resolve();
-        },
-      );
-    });
+    await EnvModel.update({ status: EnvStatus.normal }, { where: { id: ids } });
+    await this.set_envs();
   }
 
   public async updateNames({ ids, name }: { ids: string[]; name: string }) {
-    return new Promise((resolve: any) => {
-      this.cronDb.update(
-        { _id: { $in: ids } },
-        { $set: { name } },
-        { multi: true },
-        async (err, num) => {
-          await this.set_envs();
-          resolve();
-        },
-      );
-    });
+    await EnvModel.update({ name }, { where: { id: ids } });
+    await this.set_envs();
   }
 
   public async set_envs() {
     const envs = await this.envs(
       '',
       { position: -1 },
-      { name: { $exists: true } },
+      { name: { [Op.not]: null } },
     );
     const groups = _.groupBy(envs, 'name');
     let env_string = '';
     for (const key in groups) {
       if (Object.prototype.hasOwnProperty.call(groups, key)) {
         const group = groups[key];
-        env_string += `export ${key}="${_(group)
-          .filter((x) => x.status !== EnvStatus.disabled)
-          .map('value')
-          .join('&')
-          .replace(/ /g, '')}"\n`;
+
+        // 忽略不符合bash要求的环境变量名称
+        if (/^[a-zA-Z_][0-9a-zA-Z_]+$/.test(key)) {
+          let value = _(group)
+            .filter((x) => x.status !== EnvStatus.disabled)
+            .map('value')
+            .join('&')
+            .replace(/(\\)[^\n]/g, '\\\\')
+            .replace(/(\\$)/, '\\\\')
+            .replace(/"/g, '\\"')
+            .trim();
+          env_string += `export ${key}="${value}"\n`;
+        }
       }
     }
     fs.writeFileSync(config.envFile, env_string);

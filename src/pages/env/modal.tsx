@@ -34,18 +34,22 @@ const EnvModal = ({
         payload = [{ value, name, remarks }];
       }
     } else {
-      payload = { ...values, _id: env._id };
+      payload = { ...values, id: env.id };
     }
-    const { code, data } = await request[method](`${config.apiPrefix}envs`, {
-      data: payload,
-    });
-    if (code === 200) {
-      message.success(env ? '更新变量成功' : '添加变量成功');
-    } else {
-      message.error(data);
+    try {
+      const { code, data } = await request[method](`${config.apiPrefix}envs`, {
+        data: payload,
+      });
+      if (code === 200) {
+        message.success(env ? '更新变量成功' : '新建变量成功');
+      } else {
+        message.error(data);
+      }
+      setLoading(false);
+      handleCancel(data);
+    } catch (error: any) {
+      setLoading(false);
     }
-    setLoading(false);
-    handleCancel(data);
   };
 
   useEffect(() => {
@@ -57,6 +61,8 @@ const EnvModal = ({
       title={env ? '编辑变量' : '新建变量'}
       visible={visible}
       forceRender
+      centered
+      maskClosable={false}
       onOk={() => {
         form
           .validateFields()
@@ -74,12 +80,23 @@ const EnvModal = ({
         <Form.Item
           name="name"
           label="名称"
-          rules={[{ required: true, message: '请输入环境变量名称' }]}
+          rules={[
+            { required: true, message: '请输入环境变量名称', whitespace: true },
+            {
+              pattern: /^[a-zA-Z_][0-9a-zA-Z_]*$/,
+              message: '只能输入字母数字下划线，且不能以数字开头',
+            },
+          ]}
         >
           <Input placeholder="请输入环境变量名称" />
         </Form.Item>
         {!env && (
-          <Form.Item name="split" label="自动拆分" initialValue="0">
+          <Form.Item
+            name="split"
+            label="自动拆分"
+            initialValue="0"
+            tooltip="多个依赖是否换行分割"
+          >
             <Radio.Group>
               <Radio value="1">是</Radio>
               <Radio value="0">否</Radio>
@@ -89,7 +106,9 @@ const EnvModal = ({
         <Form.Item
           name="value"
           label="值"
-          rules={[{ required: true, message: '请输入环境变量值' }]}
+          rules={[
+            { required: true, message: '请输入环境变量值', whitespace: true },
+          ]}
         >
           <Input.TextArea
             rows={4}
@@ -98,7 +117,7 @@ const EnvModal = ({
           />
         </Form.Item>
         <Form.Item name="remarks" label="备注">
-          <Input />
+          <Input placeholder="请输入备注" />
         </Form.Item>
       </Form>
     </Modal>

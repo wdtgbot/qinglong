@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import got from 'got';
+import iconv from 'iconv-lite';
+import { exec } from 'child_process';
 
 export function getFileContentByName(fileName: string) {
   if (fs.existsSync(fileName)) {
@@ -86,7 +88,7 @@ export function createRandomString(min: number, max: number): string {
     'Y',
     'Z',
   ];
-  const special = ['-', '_', '#'];
+  const special = ['-', '_'];
   const config = num.concat(english).concat(ENGLISH).concat(special);
 
   const arr = [];
@@ -106,7 +108,7 @@ export function createRandomString(min: number, max: number): string {
     newArr.push(arr.splice(Math.random() * arr.length, 1)[0]);
   }
 
-  function getOne(arr) {
+  function getOne(arr: any[]) {
     return arr[Math.floor(Math.random() * arr.length)];
   }
 
@@ -114,9 +116,12 @@ export function createRandomString(min: number, max: number): string {
 }
 
 export function getToken(req: any) {
-  const { authorization } = req.headers;
+  const { authorization = '' } = req.headers;
   if (authorization && authorization.split(' ')[0] === 'Bearer') {
-    return authorization.split(' ')[1];
+    return (authorization as string)
+      .replace('Bearer ', '')
+      .replace('mobile-', '')
+      .replace('desktop-', '');
   }
   return '';
 }
@@ -132,7 +137,7 @@ export async function getNetIp(req: any) {
     ]),
   ];
   let ip = ipArray[0];
-  console.log(ipArray);
+
   if (ipArray.length > 1) {
     for (let i = 0; i < ipArray.length; i++) {
       const ipNumArray = ipArray[i].split('.');
@@ -148,24 +153,205 @@ export async function getNetIp(req: any) {
         continue;
       }
       ip = ipArray[i];
+      break;
     }
   }
   ip = ip.substr(ip.lastIndexOf(':') + 1, ip.length);
   if (ip.includes('127.0') || ip.includes('192.168') || ip.includes('10.7')) {
     ip = '';
   }
-
   try {
-    const { data } = await got
-      .get(
-        `https://sp0.baidu.com/8aQDcjqpAAV3otqbppnN2DJv/api.php?query=${ip}&co=&resource_id=6006&t=1555898284898&ie=utf8&oe=utf8&format=json&tn=baidu`,
-      )
-      .json();
-    return { address: data[0].location, ip };
+    const baiduApi = got
+      .get(`https://www.cip.cc/${ip}`, { timeout: 10000, retry: 0 })
+      .text();
+    const ipApi = got
+      .get(`https://whois.pconline.com.cn/ipJson.jsp?ip=${ip}&json=true`, {
+        timeout: 10000,
+        retry: 0,
+      })
+      .buffer();
+    const [data, ipApiBody] = await await Promise.all<any>([baiduApi, ipApi]);
+
+    const ipRegx = /.*IP	:(.*)\n/;
+    const addrRegx = /.*数据二	:(.*)\n/;
+    if (data && ipRegx.test(data) && addrRegx.test(data)) {
+      const ip = data.match(ipRegx)[1];
+      const addr = data.match(addrRegx)[1];
+      return { address: addr, ip };
+    } else if (ipApiBody) {
+      const { addr, ip } = JSON.parse(iconv.decode(ipApiBody, 'GBK'));
+      return { address: `${addr}`, ip };
+    } else {
+      return { address: `获取失败`, ip };
+    }
   } catch (error) {
-    const { country, regionName, city } = await got
-      .get(`http://ip-api.com/json/${ip}?lang=zh-CN`)
-      .json();
-    return { address: `${country} ${regionName} ${city}`, ip };
+    return { address: `获取失败`, ip };
   }
+}
+
+export function getPlatform(userAgent: string): 'mobile' | 'desktop' {
+  const ua = userAgent.toLowerCase();
+  const testUa = (regexp: RegExp) => regexp.test(ua);
+  const testVs = (regexp: RegExp) =>
+    (ua.match(regexp) || [])
+      .toString()
+      .replace(/[^0-9|_.]/g, '')
+      .replace(/_/g, '.');
+
+  // 系统
+  let system = 'unknow';
+  if (testUa(/windows|win32|win64|wow32|wow64/g)) {
+    system = 'windows'; // windows系统
+  } else if (testUa(/macintosh|macintel/g)) {
+    system = 'macos'; // macos系统
+  } else if (testUa(/x11/g)) {
+    system = 'linux'; // linux系统
+  } else if (testUa(/android|adr/g)) {
+    system = 'android'; // android系统
+  } else if (testUa(/ios|iphone|ipad|ipod|iwatch/g)) {
+    system = 'ios'; // ios系统
+  }
+
+  let platform = 'desktop';
+  if (system === 'windows' || system === 'macos' || system === 'linux') {
+    platform = 'desktop';
+  } else if (system === 'android' || system === 'ios' || testUa(/mobile/g)) {
+    platform = 'mobile';
+  }
+
+  return platform as 'mobile' | 'desktop';
+}
+
+export async function fileExist(file: any) {
+  return new Promise((resolve) => {
+    try {
+      fs.accessSync(file);
+      resolve(true);
+    } catch (error) {
+      resolve(false);
+    }
+  });
+}
+
+export async function createFile(file: string, data: string = '') {
+  return new Promise((resolve) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, data);
+    resolve(true);
+  });
+}
+
+export async function concurrentRun(
+  fnList: Array<() => Promise<any>> = [],
+  max = 5,
+) {
+  if (!fnList.length) return;
+
+  const replyList: any[] = []; // 收集任务执行结果
+  const startTime = new Date().getTime(); // 记录任务执行开始时间
+
+  // 任务执行程序
+  const schedule = async (index: number) => {
+    return new Promise(async (resolve) => {
+      const fn = fnList[index];
+      if (!fn) return resolve(null);
+
+      // 执行当前异步任务
+      const reply = await fn();
+      replyList[index] = reply;
+
+      // 执行完当前任务后，继续执行任务池的剩余任务
+      await schedule(index + max);
+      resolve(null);
+    });
+  };
+
+  // 任务池执行程序
+  const scheduleList = new Array(max)
+    .fill(0)
+    .map((_, index) => schedule(index));
+
+  // 使用 Promise.all 批量执行
+  const r = await Promise.all(scheduleList);
+  const cost = (new Date().getTime() - startTime) / 1000;
+
+  return replyList;
+}
+
+enum FileType {
+  'directory',
+  'file',
+}
+
+export function readDirs(
+  dir: string,
+  baseDir: string = '',
+  blacklist: string[] = [],
+) {
+  const relativePath = path.relative(baseDir, dir);
+  const files = fs.readdirSync(dir);
+  const result: any = files
+    .filter((x) => !blacklist.includes(x))
+    .map((file: string) => {
+      const subPath = path.join(dir, file);
+      const stats = fs.statSync(subPath);
+      const key = path.join(relativePath, file);
+      if (stats.isDirectory()) {
+        return {
+          title: file,
+          key,
+          type: 'directory',
+          disabled: true,
+          parent: relativePath,
+          children: readDirs(subPath, baseDir).sort(
+            (a: any, b: any) =>
+              (FileType as any)[a.type] - (FileType as any)[b.type],
+          ),
+        };
+      }
+      return {
+        title: file,
+        type: 'file',
+        key,
+        parent: relativePath,
+      };
+    });
+  return result.sort(
+    (a: any, b: any) => (FileType as any)[a.type] - (FileType as any)[b.type],
+  );
+}
+
+export function readDir(
+  dir: string,
+  baseDir: string = '',
+  blacklist: string[] = [],
+) {
+  const relativePath = path.relative(baseDir, dir);
+  const files = fs.readdirSync(dir);
+  const result: any = files
+    .filter((x) => !blacklist.includes(x))
+    .map((file: string) => {
+      const subPath = path.join(dir, file);
+      const stats = fs.statSync(subPath);
+      const key = path.join(relativePath, file);
+      return {
+        title: file,
+        type: stats.isDirectory() ? 'directory' : 'file',
+        key,
+        parent: relativePath,
+      };
+    });
+  return result;
+}
+
+export function promiseExec(command: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec(
+      command,
+      { maxBuffer: 200 * 1024 * 1024, encoding: 'utf8' },
+      (err, stdout, stderr) => {
+        resolve(stdout || stderr || JSON.stringify(err));
+      },
+    );
+  });
 }

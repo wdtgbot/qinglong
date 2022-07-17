@@ -9,20 +9,24 @@ import Logger from './loaders/logger';
 async function startServer() {
   const app = express();
 
-  await require('./loaders').default({ expressApp: app });
+  await require('./loaders/db').default();
 
-  app
+  await require('./loaders/initFile').default();
+
+  await require('./loaders/sentry').default({ expressApp: app });
+
+  await require('./loaders/app').default({ expressApp: app });
+
+  const server = app
     .listen(config.port, () => {
-      Logger.info(`
-      ################################################
-      🛡️  Server listening on port: ${config.port} 🛡️
-      ################################################
-    `);
+      Logger.debug(`✌️ Back server launched on port ${config.port}`);
     })
     .on('error', (err) => {
       Logger.error(err);
       process.exit(1);
     });
+
+  await require('./loaders/server').default({ server });
 }
 
 startServer();

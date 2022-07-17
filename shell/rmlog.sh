@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 ## 导入通用变量与函数
-dir_shell=/ql/shell
+dir_shell=$QL_DIR/shell
 . $dir_shell/share.sh
 
 days=$1
@@ -27,7 +27,7 @@ remove_js_log() {
 remove_empty_dir() {
     cd $dir_log
     for dir in $(ls); do
-        if [ -d $dir ] && [[ -z $(ls $dir) ]]; then
+        if [[ -d $dir ]] && [[ -z $(ls $dir) ]]; then
             rm -rf $dir
         fi
     done
